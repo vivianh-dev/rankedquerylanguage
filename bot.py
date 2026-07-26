@@ -12,6 +12,13 @@ from discord import app_commands
 
 from async_jobs import AsyncJobStore, AsyncJobSupervisor
 from rql_client import RqlClient, RqlClientError, RqlResult
+from query_builders import (
+    average_completion_query,
+    leaderboard_query,
+    matchup_query,
+    quicklook_query,
+    quicksplits_query,
+)
 
 
 LOGGER = logging.getLogger("rql-bot")
@@ -206,7 +213,7 @@ async def run_discord_query(
     username="The case-insensitive username of the player to get a current-season average completion time for."
 )
 async def average_completion(interaction: discord.Interaction, username: str):
-    await run_discord_query(interaction, f"players | filter uuid({username}) | extract nick average_completion")
+    await run_discord_query(interaction, average_completion_query(username))
 
 
 def _discord_timestamp(value) -> int | None:
@@ -264,32 +271,7 @@ async def qb_quicklook(interaction: discord.Interaction, player: str, season: in
     if cs is None:
         return
     season = season if season is not None else cs - 1
-    s = f"index s{season}"
-    p = f"filter uuid({player})"
-    tls = f"| {s} | {p} | to_timelines"
-
-    def bast(name):
-        return (
-            f'| label "For bastion {name}:" | {s} | {p} bastion({name}) | players | {p} | extract tournament_fmt | quicksave '
-        )
-
-    query = (
-        f"{s} | {p} | players | {p} | extract tournament_fmt | quicksave "
-        + f"{tls} | splits.get_if projectelo.timeline.reset | {p} | count Resets | average time "
-        + f"{tls} | splits.get_if projectelo.timeline.death | {p} | count Deaths | average time "
-        + f"{tls} | splits.get_if projectelo.timeline.death_spawnpoint | {p} | count DeathResets | average time "
-        + f"{tls} | splits.get_if nether.root | {p} | count Nethers | average time "
-        + f"{tls} | splits.get_if nether.find_bastion | {p} | count Bastions | average time "
-        + f"{tls} | splits.get_if nether.find_fortress | {p} | count Fortresses | average time "
-        + f"{tls} | splits.get_if story.follow_ender_eye | {p} | count Strongholds | average time "
-        + f"{tls} | splits.get_if story.enter_the_end | {p} | count Ends | average time "
-        + bast("TREASURE")
-        + bast("STABLES")
-        + bast("BRIDGE")
-        + bast("HOUSING")
-    )
-
-    await run_discord_query(interaction, query, no_query=True)
+    await run_discord_query(interaction, quicklook_query(player, season), no_query=True)
 
 
 @client.tree.command(description="Get split timing results for a player (defaults to previous season)")
@@ -302,23 +284,7 @@ async def qb_quicksplits(interaction: discord.Interaction, player: str, season: 
     if cs is None:
         return
     season = season if season is not None else cs - 1
-    s = f"index s{season}"
-    p = f"filter uuid({player})"
-    tls = f"| {s} | {p} | to_timelines"
-
-    def sdiff(first: str, second: str):
-        return f'{tls} | splits.diff {first} {second} | {p} | label "For {first} -> {second}:" | count SplitsCounted | average time'
-
-    query = (
-        sdiff("nether.root", "find_bastion")
-        + sdiff("find_bastion", "find_fortress")
-        + sdiff("find_fortress", "projectelo.timeline.blind_travel")
-        + sdiff("find_fortress", "story.follow_ender_eye")
-        + sdiff("story.follow_ender_eye", "end.root")
-        + sdiff("end.root", "projectelo.timeline.dragon_death")
-    )
-
-    await run_discord_query(interaction, query, no_query=True)
+    await run_discord_query(interaction, quicksplits_query(player, season), no_query=True)
 
 
 @client.tree.command(description="Various dynamic leaderboards with multiple options")
@@ -355,33 +321,21 @@ async def qb_leaderboard(
     if cs is None:
         return
     sz = cs if season is None else season
-    seastr = f"index s{sz} | "
     if seed_type is None:
         ststr = ""
     else:
         ststr = seed_type.value
-    leaderboard_queries = {
-        "pb": f"{ststr}filter noff | sort duration | take 10 | extract id date winner duration",
-        "pb@player": f"{ststr}filter noff | sort duration | enumerate | filter winner({player}) | extract rql_dynamic id date winner duration",
-        "elo": f"{ststr}players | drop elo None() | rsort elo | take 10",
-        "elo@player": f"{ststr}players | drop elo None() | rsort elo | enumerate | filter uuid({player}) | extract rql_dynamic uuid elo",
-        "average_completion": f"{ststr}players | drop average_completion None() | sort average_completion | take 10 | extract nick average_completion match_completions",
-        "average_completion@player": f"{ststr}players | drop average_completion None() | sort average_completion | enumerate | filter uuid({player}) | extract rql_dynamic nick average_completion match_completions",
-        "average_stronghold": f"{ststr}players lowff manygames | extract uuid | assign VP | {seastr}keepifattrcontained uuid VP | extract timelines | segmentby uuid | splits.get_if story.follow_ender_eye | keepifattrcontained uuid VP | averageby time uuid | sort 1 | take 10",
-        "average_stronghold@player!!": f"{ststr}players lowff manygames | extract uuid | assign VP | {seastr}keepifattrcontained uuid VP | extract timelines | segmentby uuid | splits.get_if story.follow_ender_eye | keepifattrcontained uuid VP | averageby time uuid | sort 1 | enumerate | filter 0({player})",
-        "average_end": f"{ststr}players lowff manygames | extract uuid | assign VP | {seastr}keepifattrcontained uuid VP | extract timelines | segmentby uuid | splits.get_if story.enter_the_end | keepifattrcontained uuid VP | averageby time uuid | sort 1 | take 10",
-        "average_end@player!!": f"{ststr}players lowff manygames | extract uuid | assign VP | {seastr}keepifattrcontained uuid VP | extract timelines | segmentby uuid | splits.get_if story.enter_the_end | keepifattrcontained uuid VP | averageby time uuid | sort 1 | enumerate | filter 0({player})",
-    }
-    # !! -> these require enumerate to support tuples (not currently possible)
     v = value.value
-    if v not in leaderboard_queries:
-        await interaction.response.send_message(f"Your value of {v} is not a valid choice.")
+    try:
+        query = leaderboard_query(
+            v,
+            sz,
+            player=player,
+            seed_filter=ststr,
+        )
+    except ValueError:
+        await interaction.followup.send(f"Your value of {v} is not a valid choice.")
         return
-
-    if player is not None:
-        v = v + "@player"
-
-    query = apply_season(season, leaderboard_queries[v])
 
     await run_discord_query(interaction, query)
 
@@ -422,7 +376,7 @@ async def qb_matchup(
 ):
     await run_discord_query(
         interaction,
-        apply_season(season, f"filter uuid({player1}) uuid({player2}) | players | filter uuid({player1}) {to_extract}"),
+        matchup_query(player1, player2, season, to_extract),
     )
 
 
