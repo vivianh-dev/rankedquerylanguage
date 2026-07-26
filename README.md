@@ -1,27 +1,84 @@
-## Ranked Query Language
+# Ranked Query Language Discord bot
 
-Ranked Query Language (hereafter referred to as 'RQL') is a custom pipe-expression-based query language that supports dynamic queries of the MCSR Ranked match database.
+This is DesktopFolder’s Discord interface for Ranked Query Language. The bot
+keeps the existing slash commands and legacy query syntax, while query
+compilation and execution are provided by the hosted RQL service.
 
-Currently, these queries can only be made either locally (using the samples provided, for testing) or through the bot, which is hosted on a server with a database clone.
+## Commands
 
-### Setup
+The existing commands remain available:
 
-If you'd like to test out the language locally, you'll want:
-- A new version of Python with support for type annotations (I use 3.10, can't guarantee earlier versions would work)
-- A local virtual environment to install packages into
-- To run `pip install -r requirements.txt` **after activating a virtual environment, seriously, this requirements.txt is super messy**
-- To run `python -m klunk.test` to ensure tests pass locally (that is, that the setup is correct, as obviously I would never break tests... :D)
-- To run `python bot.py --fake` to run the local query CLI
+- `/average_completion`
+- `/qb_info`
+- `/qb_quicklook`
+- `/qb_quicksplits`
+- `/qb_leaderboard`
+- `/qb_top_activity`
+- `/qb_matchup`
+- `/qb_faq`
+- `/query`
 
-### Development Notes
+`/query` waits for the hosted query result and replies in the channel, matching
+the existing behavior. `/query-async` queues longer work, acknowledges
+ephemerally, and DMs the result when it is ready.
 
-- My autoformatter is broken for some reason :( none of these files are properly formatted
-    - TODO - just install black and use that, I guess
+Async delivery is durable across bot restarts. SQLite stores only the RQL job
+ID, Discord user ID, and delivery timing metadata; query text is not stored by
+the bot.
 
-## Language Specification
+## Setup
 
-There is none.
+Python 3.10 or newer is required.
 
-## TODOs
+```sh
+python -m venv .env
+source .env/bin/activate
+python -m pip install -r requirements.txt
+```
 
-- | players vs | members should be using the same types (i.e. unify MatchMember and Player)
+Set the following environment variables:
+
+```sh
+export RQL_API_KEY='dedicated-standard-tier-key'
+export DISCORD_TOKEN='discord-bot-token'
+```
+
+Configuration:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `RQL_API_BASE_URL` | `https://rql.vivianh.dev/api/v1/legacy` | Hosted legacy-compatible RQL API |
+| `RQL_API_KEY` | required | Dedicated standard-tier API key |
+| `RQL_API_TIMEOUT_SECONDS` | `130` | Synchronous HTTP deadline |
+| `RQL_ASYNC_POLL_SECONDS` | `2` | Async job polling interval |
+| `RQL_STATE_PATH` | `.state/querybot.sqlite3` | Durable DM-delivery state |
+| `DISCORD_TOKEN` | falls back to `token.txt` | Discord bot token |
+| `LOG_LEVEL` | `INFO` | Python logging level |
+
+Except for loopback development, the RQL base URL must use HTTPS. API keys and
+query text are not written to logs.
+
+Run the Discord bot:
+
+```sh
+python bot.py
+```
+
+Run the hosted-API test CLI:
+
+```sh
+python bot.py --fake
+```
+
+## Tests
+
+The test suite uses an in-process fake RQL server and does not require a real
+API key or Discord token:
+
+```sh
+python -m unittest discover -s tests -v
+```
+
+It covers synchronous responses and attachments, safe errors and timeouts,
+async submission/polling/results, SQLite restart recovery, DM retry retention,
+and the slash-command registry.

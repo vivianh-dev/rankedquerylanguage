@@ -4,8 +4,7 @@ __pycache__/
 
 # Token and general configuration
 token.txt
-location.txt
+.state/
 
-# lol
-pg-db
-dyn.json
+# Test output
+.coverage
